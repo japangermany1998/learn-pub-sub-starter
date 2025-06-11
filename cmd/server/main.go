@@ -39,15 +39,18 @@ func main() {
 	//	fmt.Println(err)
 	//	return
 	//}
-	//_, _, err = pubsub.DeclareAndBind(
-	//	conn, routing.ExchangePerilTopic, routing.GameLogSlug, routing.GameLogSlug+".*", 1)
-	//if err != nil {
-	//	fmt.Println(err)
-	//	return
-	//}
+	err = pubsub.SubscribeGob(
+		conn, routing.ExchangePerilTopic, routing.GameLogSlug, routing.GameLogSlug+".*", 0, handleLog())
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
 	gamelogic.PrintServerHelp()
 	for {
 		words := gamelogic.GetInput()
+		if len(words) == 0 {
+			continue
+		}
 		switch words[0] {
 		case routing.PauseKey:
 			fmt.Println("Sending a pause message")
@@ -73,4 +76,17 @@ func main() {
 	//signal.Notify(done, os.Interrupt)
 	//<-done
 	//fmt.Println("Shut down program")
+
+}
+
+func handleLog() func(routing.GameLog) string {
+	return func(log routing.GameLog) string {
+		defer fmt.Print(">")
+
+		err := gamelogic.WriteLog(log)
+		if err != nil {
+			return "NackRequeue"
+		}
+		return "Ack"
+	}
 }

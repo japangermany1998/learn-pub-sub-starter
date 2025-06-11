@@ -8,6 +8,8 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 	"log"
 	"os"
+	"strconv"
+	"time"
 )
 
 func main() {
@@ -62,7 +64,7 @@ func main() {
 		routing.WarRecognitionsPrefix,
 		routing.WarRecognitionsPrefix+".*",
 		0,
-		handlerWar(gamestate))
+		handlerWar(publishCh, gamestate))
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
@@ -102,7 +104,27 @@ func main() {
 			gamelogic.PrintClientHelp()
 			break
 		case "spam":
-			fmt.Println("Spamming not allowed yet!")
+			if len(words) <= 1 {
+				fmt.Println("At least 2 words required!")
+				break
+			}
+			n, err := strconv.Atoi(words[1])
+			if err != nil {
+				fmt.Println("The second word should be number")
+				break
+			}
+			for i := 0; i < n; i++ {
+				err = pubsub.PublishGob(publishCh, routing.ExchangePerilTopic,
+					routing.GameLogSlug+"."+gamestate.GetUsername(), routing.GameLog{
+						Username:    gamestate.GetUsername(),
+						CurrentTime: time.Now(),
+						Message:     gamelogic.GetMaliciousLog(),
+					})
+				if err != nil {
+					fmt.Println(err)
+					break
+				}
+			}
 			break
 		case "quit":
 			gamelogic.PrintQuit()
@@ -125,7 +147,7 @@ func handlerMove(ch *amqp.Channel, gs *gamelogic.GameState) func(gamelogic.ArmyM
 	return func(am gamelogic.ArmyMove) string {
 		defer fmt.Print("> ")
 		outcome := gs.HandleMove(am)
-		fmt.Println(outcome)
+
 		switch outcome {
 		case gamelogic.MoveOutComeSafe:
 			return "Ack"
@@ -141,29 +163,37 @@ func handlerMove(ch *amqp.Channel, gs *gamelogic.GameState) func(gamelogic.ArmyM
 				fmt.Printf("error: %s\n", err)
 				return "NAckRequeue"
 			}
-			return "NAckRequeue"
+			return "Ack"
 		}
 		return "NackDiscard"
 	}
 }
 
-func handlerWar(gs *gamelogic.GameState) func(am gamelogic.RecognitionOfWar) string {
+func handlerWar(ch *amqp.Channel, gs *gamelogic.GameState) func(am gamelogic.RecognitionOfWar) string {
 	return func(rw gamelogic.RecognitionOfWar) string {
 		defer fmt.Print("> ")
-		outcome, _, _ := gs.HandleWar(rw)
+		outcome, winner, loser := gs.HandleWar(rw)
+		msg := ""
 		switch outcome {
 		case gamelogic.WarOutcomeNotInvolved:
 			return "NackRequeue"
 		case gamelogic.WarOutcomeNoUnits:
 			return "NackDiscard"
 		case gamelogic.WarOutcomeOpponentWon:
-			return "ack"
+			msg = fmt.Sprintf("%s won a war against %s", winner, loser)
 		case gamelogic.WarOutcomeYouWon:
-			return "ack"
+			msg = fmt.Sprintf("%s won a war against %s", winner, loser)
 		case gamelogic.WarOutcomeDraw:
-			return "ack"
+			msg = fmt.Sprintf("A war between %s and %s resulted in a draw", winner, loser)
 		}
-		fmt.Println("error")
-		return "NackDiscard"
+		err := pubsub.PublishGob(ch, routing.ExchangePerilTopic, routing.GameLogSlug+"."+rw.Attacker.Username, routing.GameLog{
+			CurrentTime: time.Now(),
+			Message:     msg,
+			Username:    rw.Attacker.Username,
+		})
+		if err != nil {
+			return "NackRequeue"
+		}
+		return "Ack"
 	}
 }
